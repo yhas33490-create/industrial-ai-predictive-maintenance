@@ -1,282 +1,124 @@
-import io
 import subprocess
-import joblib
 import numpy as np
 import pandas as pd
 import plotly.express as px
-import requests
 import streamlit as st
 
-# ReportLab للتقارير PDF
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from pipeline import (
+    load_all_artifacts,
+    run_full_enterprise_pipeline,
+    send_telegram_alert,
+    generate_pdf_report
+)
 
 st.set_page_config(page_title="Industrial AI - Enterprise Platform", layout="wide", page_icon="⚙️")
 
-st.title("⚙️ Industrial AI Engine: Enterprise Predictive Maintenance Platform")
-st.markdown("منظومة هندسية متكاملة للصيانة التنبؤية، جودة البيانات، إدارة المخاطر، والإنذارات الفورية")
+st.title("⚙️️ Industrial AI Engine: Enterprise Predictive Maintenance Platform")
+st.markdown("Integrated Engineering System for Predictive Maintenance, Data Quality, Risk Management, and Real-time Alerting")
 
 
 # =========================================================
-# 1. Caching للموديلات (تُحمل مرة واحدة فقط عند بدء السيرفر)
+# 1. Resource Caching for Models
 # =========================================================
 @st.cache_resource
-def load_all_artifacts():
-    models = {r: joblib.load(f'model_{r}.joblib') for r in ['H', 'M', 'L']}
-    iso = joblib.load('iso_forest.joblib')
-    return models, iso
+def get_cached_models():
+    return load_all_artifacts()
 
 
 try:
-    models, iso_forest = load_all_artifacts()
-    st.sidebar.success("✅ جميع الموديلات (XGBoost + Isolation Forest) محملة بنجاح!")
+    models, iso_forest = get_cached_models()
+    st.sidebar.success("✅ Models Loaded Successfully (XGBoost + Isolation Forest)!")
 except Exception as e:
-    st.sidebar.error("⚠️ لم يتم العثور على الموديلات! يرجى تشغيل `python train.py` أولاً.")
-
-
-def send_telegram_alert(bot_token: str, chat_id: str, message: str):
-    if not bot_token or not chat_id:
-        return False, "يرجى إدخال Token و Chat ID بشكل صحيح."
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
-    try:
-        res = requests.post(url, json=payload, timeout=5)
-        if res.status_code == 200:
-            return True, "تم إرسال الإنذار بنجاح إلى Telegram! 📱"
-        return False, f"فشل الإرسال: {res.text}"
-    except Exception as ex:
-        return False, f"خطأ بالاتصال: {str(ex)}"
-
-
-def generate_pdf_report(df_res: pd.DataFrame) -> io.BytesIO:
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
-    story = []
-
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=18, leading=22, textColor=colors.HexColor("#1A365D"))
-    normal_style = styles['Normal']
-
-    story.append(Paragraph("<b>Industrial AI Predictive Maintenance - Executive Summary Report</b>", title_style))
-    story.append(Spacer(1, 15))
-
-    total = len(df_res)
-    danger = len(df_res[df_res['Status'].str.contains("🔴")])
-    warning = len(df_res[df_res['Status'].str.contains("🟡")])
-    normal = len(df_res[df_res['Status'].str.contains("🟢")])
-    anomalies = len(df_res[df_res['Sensor Anomaly'] == "⚠️ قراءة شاذة"])
-
-    summary_text = f"<b>Fleet Overview:</b> Total Machines Analyzed: {total} | Healthy: {normal} | Warning: {warning} | Critical Risk: {danger} | Sensor Anomalies: {anomalies}"
-    story.append(Paragraph(summary_text, normal_style))
-    story.append(Spacer(1, 15))
-
-    critical_df = df_res[df_res['Status'].str.contains("🔴|🟡")][
-        ['UDI', 'Region', 'Status', 'Failure Prob (%)', 'Primary Root Cause', 'Est. Downtime Risk Cost']
-    ].head(15)
-
-    if not critical_df.empty:
-        data = [["UDI", "Region", "Status", "Prob (%)", "Root Cause", "Risk Cost"]]
-        for _, r in critical_df.iterrows():
-            data.append([
-                str(r['UDI']), str(r['Region']), str(r['Status'][:10]),
-                f"{r['Failure Prob (%)']}%", str(r['Primary Root Cause'])[:30], str(r['Est. Downtime Risk Cost'])
-            ])
-
-        t = Table(data, colWidths=[40, 50, 80, 60, 180, 120])
-        t.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#2B6CB0")),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ]))
-        story.append(t)
-    else:
-        story.append(Paragraph("All machines are operating within optimal safe thresholds.", normal_style))
-
-    doc.build(story)
-    buffer.seek(0)
-    return buffer
-
-
-def run_full_enterprise_pipeline(df_input: pd.DataFrame) -> pd.DataFrame:
-    thresholds = {'H': 0.35, 'M': 0.15, 'L': 0.41}
-
-    df_clean = df_input.copy()
-    df_clean.columns = [c.replace('[', '_').replace(']', '').strip() for c in df_clean.columns]
-
-    df_clean['Temp_Diff'] = df_clean['Process temperature _K'] - df_clean['Air temperature _K']
-    df_clean['Power'] = df_clean['Rotational speed _rpm'] * df_clean['Torque _Nm']
-    df_clean['Power_kW'] = ((df_clean['Rotational speed _rpm'] * 2 * np.pi / 60) * df_clean['Torque _Nm']) / 1000.0
-    df_clean['OSF_Metric'] = df_clean['Tool wear _min'] * df_clean['Torque _Nm']
-
-    feature_cols = [
-        'Air temperature _K', 'Process temperature _K',
-        'Rotational speed _rpm', 'Torque _Nm', 'Tool wear _min',
-        'Temp_Diff', 'Power', 'OSF_Metric'
-    ]
-
-    anomaly_preds = iso_forest.predict(df_clean[feature_cols])
-
-    results = []
-    for idx, row in df_clean.iterrows():
-        region = row['Type']
-        features_vec = row[feature_cols].values.reshape(1, -1)
-
-        prob = models[region].predict_proba(features_vec)[0, 1]
-        th = thresholds.get(region, 0.35)
-
-        osf_limit = 12000 if region == 'M' else 11000
-        physics_hazard = (row['OSF_Metric'] >= osf_limit) or (row['Temp_Diff'] < 8.6)
-        is_anomaly = anomaly_preds[idx] == -1
-
-        causes = []
-        if row['Tool wear _min'] >= 200:
-            causes.append("🪚 تآكل حرج في السكينة (>200 min)")
-        if row['Temp_Diff'] < 8.6:
-            causes.append("🌡️ خلل تبديد الحرارة (<8.6 K)")
-        if row['OSF_Metric'] >= osf_limit:
-            causes.append(f"⚡ إجهاد ميكانيكي OSF ({int(row['OSF_Metric'])})")
-        if row['Torque _Nm'] > 60:
-            causes.append("⚙️ عزم دوران عالي جداً (>60 Nm)")
-
-        p_kw = round(row['Power_kW'], 2)
-        energy_advice = f"💡 قدرة: {p_kw} kW. " + ("يوصى بتقليل العزم لتوفير الطاقة." if row['Torque _Nm'] > 50 else "تشغيل متوازن.")
-
-        if prob >= th or physics_hazard:
-            status = "🔴 خطر (Danger)"
-            action = "إيقاف المكنة وصيانة عاجلة فوراً."
-            est_cost = "$3,000 (توقف غير مخطط له)"
-            roi_saving = "$3,500 (توفير وقائي)"
-            if not causes:
-                causes.append("🎲 مخاطر متداخلة من الموديل")
-        elif prob >= (th * 0.6) or row['Tool wear _min'] >= 170:
-            status = "🟡 تحذير (Warning)"
-            action = "فحص وتفقد الأجزاء أثناء التوقف المجدول."
-            est_cost = "$200 (صيانة وقائية)"
-            roi_saving = "$2,200"
-            if not causes:
-                causes.append("⚠️ ارتفاع احتمالية العطل التدريجي")
-        else:
-            status = "🟢 آمن (Normal)"
-            action = "تشغيل ممتاز بدون تدخل."
-            causes = ["✅ المؤشرات طبيعية"]
-            est_cost = "$0"
-            roi_saving = "$0"
-
-        results.append({
-            'UDI': row.get('UDI', idx),
-            'Product ID': row.get('Product ID', 'N/A'),
-            'Region': region,
-            'Status': status,
-            'Sensor Anomaly': "⚠️ قراءة شاذة" if is_anomaly else "🟢 طبيعية",
-            'Failure Prob (%)': round(prob * 100, 2),
-            'Power (kW)': p_kw,
-            'Primary Root Cause': " | ".join(causes),
-            'Energy Advice': energy_advice,
-            'Est. Downtime Risk Cost': est_cost,
-            'Est. Savings via AI': roi_saving,
-            'Action Recommended': action,
-            'Torque _Nm': row['Torque _Nm'],
-            'Rotational speed _rpm': row['Rotational speed _rpm'],
-            'Tool wear _min': row['Tool wear _min']
-        })
-
-    return pd.DataFrame(results)
+    st.sidebar.error("⚠️ Models not found! Please run `python train.py` first.")
 
 
 # =========================================================
-# 2. Caching لمعالجة البيانات (منع إعادة الحسابات وتخفيف الـ CPU)
+# 2. Data Caching for Pipeline Computation
 # =========================================================
 @st.cache_data
-def cached_enterprise_pipeline(df_input: pd.DataFrame) -> pd.DataFrame:
-    return run_full_enterprise_pipeline(df_input)
+def cached_pipeline_execution(df_input: pd.DataFrame) -> pd.DataFrame:
+    return run_full_enterprise_pipeline(df_input, models, iso_forest)
 
 
 # =========================================================
-# التبويبات والواجهة الرئيسية
+# Main UI Layout & Tabs
 # =========================================================
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📋 التقرير التشغيلي والمالي",
-    "📊 لوحة التحليلات البيانية",
-    "🧪 محاكي المكنة (Simulator)",
-    "📱 نظام الإنذارات الفورية (Alerts)",
-    "🧪 اختبارات جودة الكود (Unit Testing)"
+    "📋 Operational Report",
+    "📊 Analytics Dashboard",
+    "🧪 Machine Simulator",
+    "📱 Real-time Alerts",
+    "🧪 Automated Unit Tests"
 ])
 
-uploaded_file = st.sidebar.file_uploader("رفع داتا جديدة للتقييم (CSV)", type=["csv"])
+uploaded_file = st.sidebar.file_uploader("Upload New Dataset (CSV)", type=["csv"])
 
 if uploaded_file is not None:
     new_data = pd.read_csv(uploaded_file)
-    
-    # استخدام الدالة المخزنة لمنع استهلاك الـ CPU
-    res_df = cached_enterprise_pipeline(new_data)
+    res_df = cached_pipeline_execution(new_data)
 
     # ----------------------------------------------------
-    # TAB 1: التقرير الرئيسي
+    # TAB 1: Operational Report
     # ----------------------------------------------------
     with tab1:
         c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("إجمالي المكن", len(res_df))
-        c2.metric("🟢 آمن", len(res_df[res_df['Status'].str.contains("🟢")]))
-        c3.metric("🟡 تحذير", len(res_df[res_df['Status'].str.contains("🟡")]))
-        c4.metric("🔴 خطر", len(res_df[res_df['Status'].str.contains("🔴")]))
-        c5.metric("⚠️ حساسات شاذة", len(res_df[res_df['Sensor Anomaly'] == "⚠️ قراءة شاذة"]))
+        c1.metric("Total Fleet", len(res_df))
+        c2.metric("🟢 Normal", len(res_df[res_df['Status'].str.contains("🟢")]))
+        c3.metric("🟡 Warning", len(res_df[res_df['Status'].str.contains("🟡")]))
+        c4.metric("🔴 Danger", len(res_df[res_df['Status'].str.contains("🔴")]))
+        c5.metric("⚠️ Sensor Anomalies", len(res_df[res_df['Sensor Anomaly'] == "⚠️ Anomaly Detected"]))
 
         st.markdown("---")
 
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
             csv_data = res_df.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 تحميل التقرير الكامل (CSV)", data=csv_data, file_name="industrial_report.csv", mime="text/csv")
+            st.download_button("📥 Download Full CSV Report", data=csv_data, file_name="industrial_report.csv", mime="text/csv")
         with col_btn2:
             pdf_buf = generate_pdf_report(res_df)
-            st.download_button("📄 تحميل التقرير التنفيذي (PDF)", data=pdf_buf, file_name="Executive_Maintenance_Report.pdf", mime="application/pdf")
+            st.download_button("📄 Download Executive PDF Report", data=pdf_buf, file_name="Executive_Maintenance_Report.pdf", mime="application/pdf")
 
         cols_to_show = [
             'UDI', 'Region', 'Status', 'Sensor Anomaly', 'Failure Prob (%)', 'Power (kW)',
             'Primary Root Cause', 'Est. Downtime Risk Cost', 'Action Recommended'
         ]
-        st.subheader("📋 تفاصيل حالة الأسطول والتشخيص")
+        st.subheader("📋 Machine Fleet Status & Diagnostics")
         st.dataframe(res_df[cols_to_show], use_container_width=True)
 
     # ----------------------------------------------------
-    # TAB 2: التحليلات البيانية
+    # TAB 2: Analytics Dashboard
     # ----------------------------------------------------
     with tab2:
-        st.subheader("📊 تحليلات توزيع المخاطر وجودة الحساسات")
+        st.subheader("📊 Risk Distribution & Sensor Quality Analytics")
         col_g1, col_g2 = st.columns(2)
         with col_g1:
             fig1 = px.pie(
-                res_df, names='Status', title='توزيع حالات المكن', color='Status',
-                color_discrete_map={'🟢 آمن (Normal)': '#2ecc71', '🟡 تحذير (Warning)': '#f1c40f', '🔴 خطر (Danger)': '#e74c3c'}
+                res_df, names='Status', title='Fleet Risk Distribution', color='Status',
+                color_discrete_map={'🟢 Normal': '#2ecc71', '🟡 Warning': '#f1c40f', '🔴 Danger': '#e74c3c'}
             )
             st.plotly_chart(fig1, use_container_width=True)
         with col_g2:
             fig2 = px.scatter(
                 res_df, x='Rotational speed _rpm', y='Torque _Nm', color='Status', size='Power (kW)',
-                hover_data=['UDI', 'Sensor Anomaly'], title='علاقة العزم بالسرعة واكتشاف الشذوذ'
+                hover_data=['UDI', 'Sensor Anomaly'], title='Speed vs Torque & Anomaly Mapping'
             )
             st.plotly_chart(fig2, use_container_width=True)
 
     # ----------------------------------------------------
-    # TAB 3: محاكي المكنة
+    # TAB 3: Machine Simulator
     # ----------------------------------------------------
     with tab3:
-        st.subheader("🧪 محاكاة وتعديل قراءات المكنة لحظياً")
+        st.subheader("🧪 Real-Time Machine Parameter Simulation")
         sc1, sc2, sc3 = st.columns(3)
         with sc1:
-            sim_region = st.selectbox("الفئة (Region):", ["H", "M", "L"])
-            sim_air = st.slider("حرارة الهواء (Air K):", 290.0, 310.0, 300.0)
-            sim_proc = st.slider("حرارة العملية (Process K):", 300.0, 320.0, 310.0)
+            sim_region = st.selectbox("Type Region:", ["H", "M", "L"])
+            sim_air = st.slider("Air Temp (K):", 290.0, 310.0, 300.0)
+            sim_proc = st.slider("Process Temp (K):", 300.0, 320.0, 310.0)
         with sc2:
-            sim_rpm = st.slider("السرعة (RPM):", 1100, 2900, 1500)
-            sim_torque = st.slider("العزم (Torque Nm):", 3.0, 80.0, 40.0)
+            sim_rpm = st.slider("Rotational Speed (RPM):", 1100, 2900, 1500)
+            sim_torque = st.slider("Torque (Nm):", 3.0, 80.0, 40.0)
         with sc3:
-            sim_wear = st.slider("تآكل السكينة (Tool Wear min):", 0, 260, 100)
+            sim_wear = st.slider("Tool Wear (min):", 0, 260, 100)
 
         sim_tdiff = sim_proc - sim_air
         sim_power = sim_rpm * sim_torque
@@ -287,34 +129,34 @@ if uploaded_file is not None:
         sim_anom = iso_forest.predict(sim_vec)[0] == -1
 
         st.markdown("---")
-        st.metric("احتمالية العطل T-Model Prob", f"{round(sim_prob*100, 2)}%")
+        st.metric("Model Failure Probability", f"{round(sim_prob*100, 2)}%")
         if sim_anom:
-            st.warning("⚠️ تحذير: القراءات المدخلة تعتبر شاذة وتخالف الأنماط الطبيعية للحساسات!")
+            st.warning("⚠️ Warning: Input parameters exhibit anomalous sensor behavior!")
 
         if sim_prob >= 0.35 or sim_osf >= 11000:
-            st.error("🔴 النتيجة: خطر عالي (Critical Danger)")
+            st.error("🔴 Status: Critical Danger Risk")
         else:
-            st.success("🟢 النتيجة: حالة آمنة (Normal)")
+            st.success("🟢 Status: Normal Operational Condition")
 
     # ----------------------------------------------------
-    # TAB 4: التنبيهات (Telegram)
+    # TAB 4: Real-time Alerts
     # ----------------------------------------------------
     with tab4:
-        st.subheader("📱 إرسال تنبيهات تلقائية إلى Telegram")
-        st.info("يمكنك ربط البوت الخاص بك لتلقي إشعارات فورية عند اكتشاف أي مكنة في مرحلة الخطر 🔴.")
+        st.subheader("📱 Automated Telegram Alert Dispatcher")
+        st.info("Configure your bot credentials to receive instant push notifications for machines at risk.")
 
         bot_token = st.text_input("Telegram Bot Token:", type="password")
         chat_id = st.text_input("Telegram Chat ID:")
 
         danger_machines = res_df[res_df['Status'].str.contains("🔴")]
 
-        if st.button("🚀 إرسال تقرير الخطر الآن إلى Telegram"):
+        if st.button("🚀 Dispatch Risk Alert Report to Telegram"):
             if danger_machines.empty:
-                st.success("✅ لا توجد مكن في حالة خطر حالياً لإرسال تنبيه!")
+                st.success("✅ No critical machines detected at this time.")
             else:
-                msg = f"🚨 *تنبيه حرج من نظام الصيانة التنبؤية*\n\nتم كشف عدد ({len(danger_machines)}) مكن في حالة خطر حرج 🔴!\n"
+                msg = f"🚨 *CRITICAL ALERT - Predictive Maintenance Engine*\n\nDetected ({len(danger_machines)}) machine(s) in critical danger state 🔴!\n"
                 for idx, row in danger_machines.head(5).iterrows():
-                    msg += f"\n- *UDI {row['UDI']}* (Region {row['Region']}): Prob {row['Failure Prob (%)']}% | السبب: {row['Primary Root Cause']}"
+                    msg += f"\n- *UDI {row['UDI']}* (Region {row['Region']}): Prob {row['Failure Prob (%)']}% | Root Cause: {row['Primary Root Cause']}"
 
                 success, resp_msg = send_telegram_alert(bot_token, chat_id, msg)
                 if success:
@@ -323,17 +165,17 @@ if uploaded_file is not None:
                     st.error(resp_msg)
 
     # ----------------------------------------------------
-    # TAB 5: تشغيل الـ Unit Tests
+    # TAB 5: Automated Unit Tests
     # ----------------------------------------------------
     with tab5:
-        st.subheader("🧪 MLOps Quality Assurance: Automated Unit Tests")
-        st.markdown("تشغيل الـ Unit Tests للتأكد من صحة معادلات الـ Pipeline واختبارات الجودة.")
+        st.subheader("🧪 MLOps Quality Assurance: Automated Unit Testing")
+        st.markdown("Execute automated unit testing suites to verify mathematical integrity and pipeline logic.")
 
-        if st.button("▶️ تشغيل كافة الـ Unit Tests (pytest)"):
+        if st.button("▶️ Run Unit Test Suite (pytest)"):
             res = subprocess.run(["pytest", "test_pipeline.py"], capture_output=True, text=True)
             st.code(res.stdout if res.stdout else res.stderr)
             if res.returncode == 0:
-                st.success("✅ جميع اختبارات الجودة (Unit Tests) مرت بنجاح 100%!")
+                st.success("✅ All Unit Tests Passed Successfully (100% Pass Rate)!")
 
 else:
-    st.info("👈 قم برفع ملف البيانات من القائمة الجانبية لتفعيل جميع التبويبات والخدمات المتقدمة.")
+    st.info("👈 Please upload a CSV dataset using the sidebar to activate analytics and diagnostic features.")
