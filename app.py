@@ -19,6 +19,9 @@ st.title("⚙️ Industrial AI Engine: Enterprise Predictive Maintenance Platfor
 st.markdown("منظومة هندسية متكاملة للصيانة التنبؤية، جودة البيانات، إدارة المخاطر، والإنذارات الفورية")
 
 
+# =========================================================
+# 1. Caching للموديلات (تُحمل مرة واحدة فقط عند بدء السيرفر)
+# =========================================================
 @st.cache_resource
 def load_all_artifacts():
     models = {r: joblib.load(f'model_{r}.joblib') for r in ['H', 'M', 'L']}
@@ -186,6 +189,14 @@ def run_full_enterprise_pipeline(df_input: pd.DataFrame) -> pd.DataFrame:
 
 
 # =========================================================
+# 2. Caching لمعالجة البيانات (منع إعادة الحسابات وتخفيف الـ CPU)
+# =========================================================
+@st.cache_data
+def cached_enterprise_pipeline(df_input: pd.DataFrame) -> pd.DataFrame:
+    return run_full_enterprise_pipeline(df_input)
+
+
+# =========================================================
 # التبويبات والواجهة الرئيسية
 # =========================================================
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -200,7 +211,9 @@ uploaded_file = st.sidebar.file_uploader("رفع داتا جديدة للتقي�
 
 if uploaded_file is not None:
     new_data = pd.read_csv(uploaded_file)
-    res_df = run_full_enterprise_pipeline(new_data)
+    
+    # استخدام الدالة المخزنة لمنع استهلاك الـ CPU
+    res_df = cached_enterprise_pipeline(new_data)
 
     # ----------------------------------------------------
     # TAB 1: التقرير الرئيسي
