@@ -413,13 +413,3 @@ else:
 with open("app.py", "w", encoding="utf-8") as f:
     f.write(app_code)
 
-# ==============================================================================
-# 🌐 3. تشغيل الخادم وإنشاء رابط Cloudflare Tunnel
-# ==============================================================================
-print("🌐 3. جاري إعداد خادم Streamlit ورابط Cloudflare...")
-os.system("wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared")
-os.system("chmod +x cloudflared")
-
-subprocess.Popen(["streamlit", "run", "app.py", "--server.port", "8501"])
-time.sleep(4)
-
