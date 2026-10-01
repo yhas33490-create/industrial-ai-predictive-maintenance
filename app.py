@@ -423,4 +423,3 @@ os.system("chmod +x cloudflared")
 subprocess.Popen(["streamlit", "run", "app.py", "--server.port", "8501"])
 time.sleep(4)
 
-!./cloudflared tunnel --url http://localhost:8501
