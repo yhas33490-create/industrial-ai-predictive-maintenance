@@ -1,4 +1,5 @@
 # ⚙️ Industrial AI & Physics-Informed Predictive Maintenance Suite
+🚀 **Live Demo:** [Click here to launch the interactive app](https://industrial-ai-suite.streamlit.app/)
 
 An enterprise-grade, domain-driven MLOps predictive maintenance solution designed to monitor equipment health, apply physics-informed feature engineering, detect telemetry anomalies using unsupervised learning, and deliver real-time operational intelligence.
 
